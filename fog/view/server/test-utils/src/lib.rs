@@ -4,7 +4,6 @@
 
 use grpcio::ChannelBuilder;
 use mc_attest_net::{Client as AttestClient, RaClient};
-use mc_attest_verifier::{MrSignerVerifier, Verifier, DEBUG_ENCLAVE};
 use mc_blockchain_types::{Block, BlockID, BlockIndex};
 use mc_common::{
     logger::{log, Logger},
@@ -177,13 +176,9 @@ impl RouterTestEnvironment {
         logger: Logger,
     ) -> FogViewRouterGrpcClient {
         let grpcio_env = Arc::new(grpcio::EnvBuilder::new().build());
-        let mut mr_signer_verifier =
-            MrSignerVerifier::from(mc_fog_view_enclave_measurement::sigstruct());
-        mr_signer_verifier.allow_hardening_advisory("INTEL-SA-00334");
-        let mut verifier = Verifier::default();
-        verifier.mr_signer(mr_signer_verifier).debug(DEBUG_ENCLAVE);
+        let measurement = mc_fog_view_enclave_measurement::mr_signer_measurement(None);
 
-        FogViewRouterGrpcClient::new(router_uri, verifier, grpcio_env, logger)
+        FogViewRouterGrpcClient::new(router_uri, [measurement], grpcio_env, logger)
     }
 
     fn create_router_unary_client(
@@ -192,16 +187,13 @@ impl RouterTestEnvironment {
         logger: Logger,
     ) -> FogViewGrpcClient {
         let grpcio_env = Arc::new(grpcio::EnvBuilder::new().build());
-        let mr_signer_verifier =
-            MrSignerVerifier::from(mc_fog_view_enclave_measurement::sigstruct());
-        let mut verifier = Verifier::default();
-        verifier.mr_signer(mr_signer_verifier).debug(DEBUG_ENCLAVE);
+        let measurement = mc_fog_view_enclave_measurement::mr_signer_measurement(None);
 
         FogViewGrpcClient::new(
             chain_id,
             router_uri,
             GRPC_RETRY_CONFIG,
-            verifier,
+            [measurement],
             grpcio_env,
             logger,
         )

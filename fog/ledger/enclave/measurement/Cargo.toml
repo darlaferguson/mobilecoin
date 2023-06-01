@@ -15,7 +15,7 @@ sgx-sim = []
 
 [dependencies]
 mc-attest-core = { path = "../../../../attest/core" }
-mc-attest-verifier = { path = "../../../../attest/verifier" }
+mc-attest-verifier-config = { path = "../../../../attest/verifier/config" }
 mc-sgx-css = { path = "../../../../sgx/css" }
 
 [build-dependencies]

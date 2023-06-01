@@ -5,7 +5,7 @@
 use crate::client::Client;
 use grpcio::EnvBuilder;
 use mc_account_keys::{AccountKey, PublicAddress};
-use mc_attest_verifier::{MrSignerVerifier, Verifier, DEBUG_ENCLAVE};
+use mc_attest_verifier_config::{TrustedMeasurement, TrustedMrSignerMeasurement};
 use mc_common::logger::{log, o, Logger};
 use mc_connection::{HardcodedCredentialsProvider, ThickClient};
 use mc_fog_ledger_connection::{
@@ -143,30 +143,30 @@ impl ClientBuilder {
         let (fog_merkle_proof, fog_key_image, fog_untrusted, fog_block) =
             self.build_fog_ledger_server_conns(grpc_env.clone());
 
-        let verifier = self.get_consensus_verifier();
+        let measurement = self.consensus_measurement();
 
         log::debug!(
             self.logger,
-            "Consensus attestation verifier: {:?}",
-            verifier
+            "Consensus attestation measurement: {:?}",
+            measurement
         );
 
         let consensus_service_conn = ThickClient::new(
             self.chain_id.clone(),
             self.uri.clone(),
-            verifier,
+            [measurement],
             grpc_env.clone(),
             HardcodedCredentialsProvider::from(&self.uri),
             self.logger.new(o!("mc.cxn" => self.uri.addr())),
         )
         .expect("ThickClient::new returned an error");
 
-        let fog_ingest_verifier = self.get_fog_ingest_verifier();
+        let fog_ingest_measurement = self.fog_ingest_measurement();
 
         log::debug!(
             self.logger,
-            "Fog ingest attestation verifier: {:?}",
-            fog_ingest_verifier
+            "Fog ingest attestation measurement: {:?}",
+            fog_ingest_measurement
         );
 
         let fog_report_conn =
@@ -179,7 +179,7 @@ impl ClientBuilder {
             fog_key_image,
             fog_block,
             fog_report_conn,
-            fog_ingest_verifier,
+            [fog_ingest_measurement],
             fog_untrusted,
             self.ring_size,
             self.key,
@@ -191,15 +191,19 @@ impl ClientBuilder {
     // Build a Fog View connection, taking into account acct_host_override
     // and default port
     fn build_fog_view_conn(&self, grpc_env: Arc<grpcio::Environment>) -> FogViewGrpcClient {
-        let verifier = self.get_fog_view_verifier();
+        let measurement = self.fog_view_measurement();
 
-        log::debug!(self.logger, "Fog view attestation verifier: {:?}", verifier);
+        log::debug!(
+            self.logger,
+            "Fog view attestation measurement: {:?}",
+            measurement
+        );
 
         FogViewGrpcClient::new(
             self.chain_id.clone(),
             self.fog_view_address.clone(),
             self.grpc_retry_config,
-            verifier,
+            [measurement],
             grpc_env,
             self.logger.clone(),
         )
@@ -215,12 +219,12 @@ impl ClientBuilder {
         FogUntrustedLedgerGrpcClient,
         FogBlockGrpcClient,
     ) {
-        let verifier = self.get_fog_ledger_verifier();
+        let measurement = self.fog_ledger_measurement();
 
         log::debug!(
             self.logger,
-            "Fog ledger attestation verifier: {:?}",
-            verifier
+            "Fog ledger attestation measurement: {:?}",
+            measurement
         );
 
         (
@@ -228,7 +232,7 @@ impl ClientBuilder {
                 self.chain_id.clone(),
                 self.ledger_server_address.clone(),
                 self.grpc_retry_config,
-                verifier.clone(),
+                [measurement.clone()],
                 grpc_env.clone(),
                 self.logger.clone(),
             ),
@@ -236,7 +240,7 @@ impl ClientBuilder {
                 self.chain_id.clone(),
                 self.ledger_server_address.clone(),
                 self.grpc_retry_config,
-                verifier,
+                [measurement],
                 grpc_env.clone(),
                 self.logger.clone(),
             ),
@@ -255,85 +259,67 @@ impl ClientBuilder {
         )
     }
 
-    // Get consensus verifier (dynamic or build time, MRSIGNER)
-    fn get_consensus_verifier(&self) -> Verifier {
-        let mr_signer_verifier = if let Some(signature) = self.consensus_sigstruct.as_ref() {
-            let mut mr_signer_verifier = MrSignerVerifier::new(
-                signature.mrsigner().into(),
+    // Get consensus attestation measurement (dynamic or build time, MRSIGNER)
+    fn consensus_measurement(&self) -> TrustedMeasurement {
+        if let Some(signature) = self.consensus_sigstruct.as_ref() {
+            let mr_signer_measurement = TrustedMrSignerMeasurement::new(
+                &signature.mrsigner(),
                 signature.product_id(),
                 signature.version(),
+                mc_consensus_enclave_measurement::CONFIG_ADVISORIES,
+                mc_consensus_enclave_measurement::HARDENING_ADVISORIES,
             );
-            mr_signer_verifier
-                .allow_hardening_advisories(mc_consensus_enclave_measurement::HARDENING_ADVISORIES);
-            mr_signer_verifier
+            mr_signer_measurement.into()
         } else {
-            mc_consensus_enclave_measurement::get_mr_signer_verifier(None)
-        };
-
-        let mut verifier = Verifier::default();
-        verifier.debug(DEBUG_ENCLAVE).mr_signer(mr_signer_verifier);
-        verifier
+            mc_consensus_enclave_measurement::mr_signer_measurement(None)
+        }
     }
 
-    // Get fog ingest verifier (dynamic or build time, MRSIGNER)
-    fn get_fog_ingest_verifier(&self) -> Verifier {
-        let mr_signer_verifier = if let Some(signature) = self.fog_ingest_sigstruct.as_ref() {
-            let mut mr_signer_verifier = MrSignerVerifier::new(
-                signature.mrsigner().into(),
+    // Get fog ingest attestation measurement (dynamic or build time, MRSIGNER)
+    fn fog_ingest_measurement(&self) -> TrustedMeasurement {
+        if let Some(signature) = self.fog_ingest_sigstruct.as_ref() {
+            let mr_signer_measurement = TrustedMrSignerMeasurement::new(
+                &signature.mrsigner(),
                 signature.product_id(),
                 signature.version(),
-            );
-            mr_signer_verifier.allow_hardening_advisories(
+                mc_fog_ingest_enclave_measurement::CONFIG_ADVISORIES,
                 mc_fog_ingest_enclave_measurement::HARDENING_ADVISORIES,
             );
-            mr_signer_verifier
+            mr_signer_measurement.into()
         } else {
-            mc_fog_ingest_enclave_measurement::get_mr_signer_verifier(None)
-        };
-
-        let mut verifier = Verifier::default();
-        verifier.debug(DEBUG_ENCLAVE).mr_signer(mr_signer_verifier);
-        verifier
+            mc_fog_ingest_enclave_measurement::mr_signer_measurement(None)
+        }
     }
 
-    // Get fog ledger verifier (dynamic or build time, MRSIGNER)
-    fn get_fog_ledger_verifier(&self) -> Verifier {
-        let mr_signer_verifier = if let Some(signature) = self.fog_ledger_sigstruct.as_ref() {
-            let mut mr_signer_verifier = MrSignerVerifier::new(
-                signature.mrsigner().into(),
+    // Get fog ledger attestation measurement (dynamic or build time, MRSIGNER)
+    fn fog_ledger_measurement(&self) -> TrustedMeasurement {
+        if let Some(signature) = self.fog_ledger_sigstruct.as_ref() {
+            let mr_signer_measurement = TrustedMrSignerMeasurement::new(
+                &signature.mrsigner(),
                 signature.product_id(),
                 signature.version(),
-            );
-            mr_signer_verifier.allow_hardening_advisories(
+                mc_fog_ledger_enclave_measurement::CONFIG_ADVISORIES,
                 mc_fog_ledger_enclave_measurement::HARDENING_ADVISORIES,
             );
-            mr_signer_verifier
+            mr_signer_measurement.into()
         } else {
-            mc_fog_ledger_enclave_measurement::get_mr_signer_verifier(None)
-        };
-
-        let mut verifier = Verifier::default();
-        verifier.debug(DEBUG_ENCLAVE).mr_signer(mr_signer_verifier);
-        verifier
+            mc_fog_ledger_enclave_measurement::mr_signer_measurement(None)
+        }
     }
 
-    // Get fog view verifier (dynamic or build time, MRSIGNER)
-    fn get_fog_view_verifier(&self) -> Verifier {
-        let mr_signer_verifier = if let Some(signature) = self.fog_view_sigstruct.as_ref() {
-            let mut mr_signer_verifier = MrSignerVerifier::new(
-                signature.mrsigner().into(),
+    // Get fog view attestation measurement (dynamic or build time, MRSIGNER)
+    fn fog_view_measurement(&self) -> TrustedMeasurement {
+        if let Some(signature) = self.fog_view_sigstruct.as_ref() {
+            let mr_signer_measurment = TrustedMrSignerMeasurement::new(
+                &signature.mrsigner(),
                 signature.product_id(),
                 signature.version(),
+                mc_fog_view_enclave_measurement::CONFIG_ADVISORIES,
+                mc_fog_view_enclave_measurement::HARDENING_ADVISORIES,
             );
-            mr_signer_verifier
-                .allow_hardening_advisories(mc_fog_view_enclave_measurement::HARDENING_ADVISORIES);
-            mr_signer_verifier
+            mr_signer_measurment.into()
         } else {
-            mc_fog_view_enclave_measurement::get_mr_signer_verifier(None)
-        };
-
-        let mut verifier = Verifier::default();
-        verifier.debug(DEBUG_ENCLAVE).mr_signer(mr_signer_verifier);
-        verifier
+            mc_fog_view_enclave_measurement::mr_signer_measurement(None)
+        }
     }
 }
